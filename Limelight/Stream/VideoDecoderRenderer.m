@@ -123,7 +123,7 @@ static CFTimeInterval lastTargetTimestamp;
     
     int pendingFrames = LiGetPendingVideoFrames();
     if (pendingFrames == 0) {
-        Log(LOG_I, @"pending frames: %d", pendingFrames);
+        // Log(LOG_I, @"pending frames: %d", pendingFrames);
     }
     
     CFTimeInterval dur = _displayLink.targetTimestamp - lastTargetTimestamp;
@@ -132,34 +132,8 @@ static CFTimeInterval lastTargetTimestamp;
         Log(LOG_I, @"callback pacing: %f", dur);
     }
     
-    int addedFrames = 0;
-    while (LiPollNextVideoFrame(&handle, &du)) {
-        LiCompleteVideoFrame(handle, DrSubmitDecodeUnit(du));
-        addedFrames++;
-        
-        if (framePacing) {
-            // Calculate the actual display refresh rate
-            double displayRefreshRate = 1 / (_displayLink.targetTimestamp - _displayLink.timestamp);
-            if (displayRefreshRate < 59.0f) {
-                Log(LOG_E, @"slow frame timing, derived FPS: %f", displayRefreshRate);
-            }
-            
-            // Only pace frames if the display refresh rate is >= 90% of our stream frame rate.
-            // Battery saver, accessibility settings, or device thermals can cause the actual
-            // refresh rate of the display to drop below the physical maximum.
-            if (displayRefreshRate >= frameRate * 0.9f) {
-                // Keep one pending frame to smooth out gaps due to
-                // network jitter at the cost of 1 frame of latency
-                if (LiGetPendingVideoFrames() == 1) {
-                    break;
-                }
-            }
-        }
-    }
-    
-    if (addedFrames != 1) {
-        Log(LOG_I, @"added frames: %d", addedFrames);
-    }
+    LiWaitForNextVideoFrame(&handle, &du);
+    LiCompleteVideoFrame(handle, DrSubmitDecodeUnit(du));
 }
 
 - (void)stop
@@ -612,7 +586,11 @@ static int lastTimestamp;
         Log(LOG_I, @"presentation dur: %d", dur);
     }
     
-    CMSampleTimingInfo sampleTiming = {kCMTimeInvalid, CMTimeMake(du->presentationTimeMs, 1000), kCMTimeInvalid};
+    int presentationTimeMs = du->presentationTimeMs;
+    if (framePacing) {
+        presentationTimeMs += ceil(1000 / (frameRate));
+    }
+    CMSampleTimingInfo sampleTiming = {kCMTimeInvalid, CMTimeMake(presentationTimeMs, 1000), kCMTimeInvalid};
     
     status = CMSampleBufferCreateReady(kCFAllocatorDefault,
                                   frameBlockBuffer,
