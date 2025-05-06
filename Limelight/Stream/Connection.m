@@ -116,6 +116,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit)
     unsigned char* data = (unsigned char*) malloc(decodeUnit->fullLength);
     if (data == NULL) {
         // A frame was lost due to OOM condition
+        Log(LOG_E, @"Lost frame due to OOM condition");
         return DR_NEED_IDR;
     }
     

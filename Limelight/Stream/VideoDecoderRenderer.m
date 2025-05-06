@@ -114,17 +114,35 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
 // TODO: Refactor this
 int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
 
+static CFTimeInterval lastTargetTimestamp;
+
 - (void)displayLinkCallback:(CADisplayLink *)sender
 {
     VIDEO_FRAME_HANDLE handle;
     PDECODE_UNIT du;
     
+    int pendingFrames = LiGetPendingVideoFrames();
+    if (pendingFrames == 0) {
+        Log(LOG_I, @"pending frames: %d", pendingFrames);
+    }
+    
+    CFTimeInterval dur = _displayLink.targetTimestamp - lastTargetTimestamp;
+    lastTargetTimestamp = _displayLink.targetTimestamp;
+    if (dur > 0.017f) {
+        Log(LOG_I, @"callback pacing: %f", dur);
+    }
+    
+    int addedFrames = 0;
     while (LiPollNextVideoFrame(&handle, &du)) {
         LiCompleteVideoFrame(handle, DrSubmitDecodeUnit(du));
+        addedFrames++;
         
         if (framePacing) {
             // Calculate the actual display refresh rate
             double displayRefreshRate = 1 / (_displayLink.targetTimestamp - _displayLink.timestamp);
+            if (displayRefreshRate < 59.0f) {
+                Log(LOG_E, @"slow frame timing, derived FPS: %f", displayRefreshRate);
+            }
             
             // Only pace frames if the display refresh rate is >= 90% of our stream frame rate.
             // Battery saver, accessibility settings, or device thermals can cause the actual
@@ -137,6 +155,10 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
                 }
             }
         }
+    }
+    
+    if (addedFrames != 1) {
+        Log(LOG_I, @"added frames: %d", addedFrames);
     }
 }
 
@@ -401,6 +423,8 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     return formatDesc;
 }
 
+static int lastTimestamp;
+
 // This function must free data for bufferType == BUFFER_TYPE_PICDATA
 - (int)submitDecodeBuffer:(unsigned char *)data length:(int)length bufferType:(int)bufferType decodeUnit:(PDECODE_UNIT)du
 {
@@ -528,6 +552,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         return DR_NEED_IDR;
     }
     
+    CFTimeInterval decodeStart = CACurrentMediaTime();
     // Now we're decoding actual frame data here
     CMBlockBufferRef frameBlockBuffer;
     CMBlockBufferRef dataBlockBuffer;
@@ -580,6 +605,13 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         
     CMSampleBufferRef sampleBuffer;
     
+    int dur = du->presentationTimeMs - lastTimestamp;
+    lastTimestamp = du->presentationTimeMs;
+    
+    if (dur > 20) {
+        Log(LOG_I, @"presentation dur: %d", dur);
+    }
+    
     CMSampleTimingInfo sampleTiming = {kCMTimeInvalid, CMTimeMake(du->presentationTimeMs, 1000), kCMTimeInvalid};
     
     status = CMSampleBufferCreateReady(kCFAllocatorDefault,
@@ -596,6 +628,12 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
 
     // Enqueue the next frame
     [self->displayLayer enqueueSampleBuffer:sampleBuffer];
+    
+    CFTimeInterval decodeEnd = CACurrentMediaTime();
+    CFTimeInterval decodeDur = decodeEnd - decodeStart;
+    if (decodeDur > 0.003f) {
+        Log(LOG_I, @"Decode time: %f\n", decodeEnd - decodeStart);
+    }
     
     if (du->frameType == FRAME_TYPE_IDR) {
         // Ensure the layer is visible now
