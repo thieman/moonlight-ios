@@ -644,6 +644,29 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit, CFTimeInterval targetTimestamp);
     };
 
     CMSampleBufferRef sampleBuffer;
+    
+    if (du->frameNumber == 1) {
+        // On first frame, set timebase to equal the initial presentation time.
+        // This will sync the display clocks between client and server
+        CMTimebaseRef timebase = NULL;
+        OSStatus status = CMTimebaseCreateWithSourceClock(CFAllocatorGetDefault(),
+                                                          CMClockGetHostTimeClock(),
+                                                          &timebase);
+        if (status != noErr) {
+            // Handle error
+        }
+        
+        // Set the timebase to the initial pts here
+        CMTimebaseSetTime(timebase, sampleTiming.presentationTimeStamp);
+        CMTimebaseSetRate(timebase, 1.0);
+        
+        [displayLayer setControlTimebase:timebase];
+    }
+    
+    Log(LOG_I, @"[%f] frame %d got presentation time %f",
+        CACurrentMediaTime(), du->frameNumber,
+        targetTimestamp);
+    
     status = CMSampleBufferCreateReady(kCFAllocatorDefault,
                                   frameBlockBuffer,
                                   formatDesc, 1, 1,
