@@ -112,6 +112,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     PDECODE_UNIT du;
     
     while (LiWaitForNextVideoFrame(&handle, &du)) {
+        Log(LOG_I, @"got frame %d at %f", du->frameNumber, CACurrentMediaTime());
         LiCompleteVideoFrame(handle, DrSubmitDecodeUnit(du));
     }
 }
@@ -377,6 +378,9 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     return formatDesc;
 }
 
+static int framesRecv = 0;
+static double startTime = 0;
+
 // This function must free data for bufferType == BUFFER_TYPE_PICDATA
 - (int)submitDecodeBuffer:(unsigned char *)data length:(int)length bufferType:(int)bufferType decodeUnit:(PDECODE_UNIT)du
 {
@@ -556,7 +560,9 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         
     CMSampleBufferRef sampleBuffer;
     
-    if (du->frameNumber == 1) {
+    if (du->frameNumber == 60) {
+        startTime = CACurrentMediaTime();
+        
         // On first frame, set timebase to equal the initial presentation time.
         // This will sync the display clocks between client and server
         CMTimebaseRef timebase = NULL;
@@ -567,18 +573,34 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
             // Handle error
         }
         
-        // Set the timebase to the initial pts here
-        CMTimebaseSetTime(timebase, CMTimeMake(du->presentationTimeMs, 1000));
+        // Set the timebase to 0ms and base timings off of the frame number (optimistic)
+        CMTimebaseSetTime(timebase, CMTimeMake(0, 1000));
         CMTimebaseSetRate(timebase, 1.0);
         
         [displayLayer setControlTimebase:timebase];
     }
     
-    int ptime = du->presentationTimeMs;
-    if (framePacing) {
-        ptime += 1000 / frameRate;
+    framesRecv++;
+    double timeDiff = CACurrentMediaTime() - startTime;
+    Log(LOG_I, @"expected: %f  received: %d", 60 + (timeDiff * frameRate), framesRecv);
+    
+    int64_t ptime = (du->frameNumber-60) * (1000000 / frameRate);
+    if (frameRate == 30) {
+        ptime += (du->frameNumber / 3) * 1000;
+    } else if (frameRate == 60) {
+        ptime += (du->frameNumber / 3) * 2000;
+    } else {
+        // error
     }
-    CMSampleTimingInfo sampleTiming = {CMTimeMake(1000 / frameRate, 1000), CMTimeMake(ptime, 1000), kCMTimeInvalid};
+    
+    float t = CACurrentMediaTime();
+    float diff = t - (ptime / 1000000.);
+    
+    if (framePacing) {
+        ptime += 1000000 / frameRate;
+    }
+    Log(LOG_I, @"ptime: %d", ptime);
+    CMSampleTimingInfo sampleTiming = {kCMTimeInvalid, CMTimeMake(ptime, 1000000), kCMTimeInvalid};
     
     status = CMSampleBufferCreateReady(kCFAllocatorDefault,
                                   frameBlockBuffer,
