@@ -556,7 +556,11 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         
     CMSampleBufferRef sampleBuffer;
     
-    CMSampleTimingInfo sampleTiming = {kCMTimeInvalid, CMTimeMake(du->presentationTimeMs, 1000), kCMTimeInvalid};
+    int ptime = du->presentationTimeMs;
+    if (framePacing) {
+        ptime += 1000 / frameRate;
+    }
+    CMSampleTimingInfo sampleTiming = {kCMTimeInvalid, CMTimeMake(ptime, 1000), kCMTimeInvalid};
     
     status = CMSampleBufferCreateReady(kCFAllocatorDefault,
                                   frameBlockBuffer,
