@@ -580,6 +580,10 @@ static double startTime = 0;
         [displayLayer setControlTimebase:timebase];
     }
     
+    if (du->frameNumber == 1) {
+        framesRecv = 1;
+    }
+    
     framesRecv++;
     double timeDiff = CACurrentMediaTime() - startTime;
     Log(LOG_I, @"expected: %f  received: %d", 60 + (timeDiff * frameRate), framesRecv);
