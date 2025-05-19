@@ -657,15 +657,14 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit, CFTimeInterval targetTimestamp);
         }
         
         // Set the timebase to the initial pts here
-        CMTimebaseSetTime(timebase, sampleTiming.presentationTimeStamp);
+        // Also set the clock back to initiate frame delay / pacing
+        CMTime startTime = CMTimeSubtract(sampleTiming.presentationTimeStamp, CMTimeMake(20, 1000));
+        // CMTime startTime = sampleTiming.presentationTimeStamp;
+        CMTimebaseSetTime(timebase, startTime);
         CMTimebaseSetRate(timebase, 1.0);
         
         [displayLayer setControlTimebase:timebase];
     }
-    
-    Log(LOG_I, @"[%f] frame %d got presentation time %f",
-        CACurrentMediaTime(), du->frameNumber,
-        targetTimestamp);
     
     status = CMSampleBufferCreateReady(kCFAllocatorDefault,
                                   frameBlockBuffer,
@@ -678,6 +677,12 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit, CFTimeInterval targetTimestamp);
         CFRelease(frameBlockBuffer);
         return DR_NEED_IDR;
     }
+    
+    // CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, YES);
+    // if (attachments != NULL) {
+        // CFMutableDictionaryRef attachment = (CFMutableDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
+        // CFDictionarySetValue(attachment, kCMSampleAttachmentKey_DisplayImmediately, kCFBooleanTrue);
+    // }
 
     // Enqueue the next frame
     [self->displayLayer enqueueSampleBuffer:sampleBuffer];
