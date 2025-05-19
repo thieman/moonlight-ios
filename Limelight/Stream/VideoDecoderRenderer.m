@@ -101,48 +101,25 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
 
 - (void)start
 {
-    _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayLinkCallback:)];
-    if (@available(iOS 15.0, tvOS 15.0, *)) {
-        _displayLink.preferredFrameRateRange = CAFrameRateRangeMake(self->frameRate, self->frameRate, self->frameRate);
-    }
-    else {
-        _displayLink.preferredFramesPerSecond = self->frameRate;
-    }
-    [_displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
+    [self performSelectorInBackground:@selector(pullFrames) withObject:nil];
 }
 
 // TODO: Refactor this
 int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
 
-- (void)displayLinkCallback:(CADisplayLink *)sender
-{
+- (void)pullFrames {
     VIDEO_FRAME_HANDLE handle;
     PDECODE_UNIT du;
     
-    while (LiPollNextVideoFrame(&handle, &du)) {
+    while (LiWaitForNextVideoFrame(&handle, &du)) {
+        Log(LOG_I, @"got frame %d at %f", du->frameNumber, CACurrentMediaTime());
         LiCompleteVideoFrame(handle, DrSubmitDecodeUnit(du));
-        
-        if (framePacing) {
-            // Calculate the actual display refresh rate
-            double displayRefreshRate = 1 / (_displayLink.targetTimestamp - _displayLink.timestamp);
-            
-            // Only pace frames if the display refresh rate is >= 90% of our stream frame rate.
-            // Battery saver, accessibility settings, or device thermals can cause the actual
-            // refresh rate of the display to drop below the physical maximum.
-            if (displayRefreshRate >= frameRate * 0.9f) {
-                // Keep one pending frame to smooth out gaps due to
-                // network jitter at the cost of 1 frame of latency
-                if (LiGetPendingVideoFrames() == 1) {
-                    break;
-                }
-            }
-        }
     }
 }
 
 - (void)stop
 {
-    [_displayLink invalidate];
+    LiWakeWaitForVideoFrame();
 }
 
 #define NALU_START_PREFIX_SIZE 3
@@ -401,6 +378,9 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     return formatDesc;
 }
 
+static int framesRecv = 0;
+static double startTime = 0;
+
 // This function must free data for bufferType == BUFFER_TYPE_PICDATA
 - (int)submitDecodeBuffer:(unsigned char *)data length:(int)length bufferType:(int)bufferType decodeUnit:(PDECODE_UNIT)du
 {
@@ -580,7 +560,51 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         
     CMSampleBufferRef sampleBuffer;
     
-    CMSampleTimingInfo sampleTiming = {kCMTimeInvalid, CMTimeMake(du->presentationTimeMs, 1000), kCMTimeInvalid};
+    if (du->frameNumber == 60) {
+        startTime = CACurrentMediaTime();
+        
+        // On first frame, set timebase to equal the initial presentation time.
+        // This will sync the display clocks between client and server
+        CMTimebaseRef timebase = NULL;
+        OSStatus status = CMTimebaseCreateWithSourceClock(CFAllocatorGetDefault(),
+                                                          CMClockGetHostTimeClock(),
+                                                          &timebase);
+        if (status != noErr) {
+            // Handle error
+        }
+        
+        // Set the timebase to 0ms and base timings off of the frame number (optimistic)
+        CMTimebaseSetTime(timebase, CMTimeMake(0, 1000));
+        CMTimebaseSetRate(timebase, 1.0);
+        
+        [displayLayer setControlTimebase:timebase];
+    }
+    
+    if (du->frameNumber == 1) {
+        framesRecv = 1;
+    }
+    
+    framesRecv++;
+    double timeDiff = CACurrentMediaTime() - startTime;
+    Log(LOG_I, @"expected: %f  received: %d", 60 + (timeDiff * frameRate), framesRecv);
+    
+    int64_t ptime = (du->frameNumber-60) * (1000000 / frameRate);
+    if (frameRate == 30) {
+        ptime += (du->frameNumber / 3) * 1000;
+    } else if (frameRate == 60) {
+        ptime += (du->frameNumber / 3) * 2000;
+    } else {
+        // error
+    }
+    
+    float t = CACurrentMediaTime();
+    float diff = t - (ptime / 1000000.);
+    
+    if (framePacing) {
+        ptime += 1000000 / frameRate;
+    }
+    Log(LOG_I, @"ptime: %d", ptime);
+    CMSampleTimingInfo sampleTiming = {kCMTimeInvalid, CMTimeMake(ptime, 1000000), kCMTimeInvalid};
     
     status = CMSampleBufferCreateReady(kCFAllocatorDefault,
                                   frameBlockBuffer,
@@ -593,16 +617,18 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         CFRelease(frameBlockBuffer);
         return DR_NEED_IDR;
     }
-
+    
     // Enqueue the next frame
     [self->displayLayer enqueueSampleBuffer:sampleBuffer];
     
     if (du->frameType == FRAME_TYPE_IDR) {
-        // Ensure the layer is visible now
-        self->displayLayer.hidden = NO;
-        
-        // Tell our parent VC to hide the progress indicator
-        [self->_callbacks videoContentShown];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // Ensure the layer is visible now
+            self->displayLayer.hidden = NO;
+            
+            // Tell our parent VC to hide the progress indicator
+            [self->_callbacks videoContentShown];
+        });
     }
     
     // Dereference the buffers
