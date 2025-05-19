@@ -635,7 +635,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit, CFTimeInterval targetTimestamp);
             return DR_NEED_IDR;
         }
     }
-
+    
     // Set pts to the current frame's targetTimestamp pts
     CMSampleTimingInfo sampleTiming = {
         .duration              = kCMTimeInvalid,
